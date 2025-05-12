@@ -1,43 +1,49 @@
 import streamlit as st
-from asammdf import MDF
 import pandas as pd
-import numpy as np
+import plotly.express as px
+from utils import detect_anomalies, load_testbench_data
+import json
+import os
 
-st.title("📁 MF4 File Viewer and Signal Plotter")
+CONFIG_FILE = "config.json"
 
-# File uploader
-with st.container(border=True):
-    uploaded_file = st.file_uploader("Upload an .mf4 file", type=["mf4"])
-    if uploaded_file:
-        mdf = MDF(uploaded_file)
-        st.success("MF4 file loaded successfully!")
+st.set_page_config(layout="wide")
+st.title("📊 TrendForge – AI-Powered Test Bench Data Analyzer")
 
-        # Show general info
-        with st.expander("📄 File Info"):
-            st.write(f"Number of Channels: {len(mdf.channels_db)}")
-            st.write(f"Duration: {mdf.duration:.2f} seconds")
-            st.write(f"Time Range: {mdf.timestamps[0]:.2f}s to {mdf.timestamps[-1]:.2f}s")
+uploaded_file = st.file_uploader("Upload Test Bench File (.txt)", type=["txt"])
 
-        # Signal selection
-        all_signals = list(mdf.channels_db.keys())
-        selected_signals = st.multiselect("Select signals to plot", all_signals, max_selections=5)
+if uploaded_file:
+    df = load_testbench_data(uploaded_file)
+    st.success(f"Loaded {df.shape[0]} rows.")
+    signals = df.columns[1:]  # exclude timestamp
 
-        if selected_signals:
-            rolling_average = st.toggle("Rolling average")
-            signal_data = {}
-            for signal in selected_signals:
-                ts, values = mdf.get(signal).samples()
-                df = pd.DataFrame({signal: values}, index=ts)
-                if rolling_average:
-                    df = df.rolling(100).mean().dropna()
-                signal_data[signal] = df
+    with st.sidebar:
+        st.header("🛠️ Visualization Config")
+        signal_choice = st.selectbox("Choose signal to plot", signals)
+        show_anomalies = st.checkbox("Highlight anomalies", value=True)
+        save_cfg = st.button("💾 Save Config")
+        load_cfg = st.button("🔁 Load Config")
 
-            combined_df = pd.concat(signal_data.values(), axis=1)
+    if save_cfg:
+        with open(CONFIG_FILE, "w") as f:
+            json.dump({"signal": signal_choice}, f)
+        st.sidebar.success("Config saved.")
 
-            tab1, tab2 = st.tabs(["Chart", "Dataframe"])
-            with tab1:
-                st.line_chart(combined_df, height=300)
-            with tab2:
-                st.dataframe(combined_df.reset_index(), height=300, use_container_width=True)
+    if load_cfg and os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, "r") as f:
+            cfg = json.load(f)
+            signal_choice = cfg["signal"]
+        st.sidebar.success("Config loaded.")
+
+    # Plotting
+    st.subheader(f"📈 Signal: {signal_choice}")
+    plot_df = df[["timestamp", signal_choice]].copy()
+
+    if show_anomalies:
+        anoms = detect_anomalies(plot_df, signal_choice)
+        fig = px.line(plot_df, x="timestamp", y=signal_choice, title="Signal Plot with Anomalies")
+        fig.add_scatter(x=anoms["timestamp"], y=anoms[signal_choice], mode="markers", name="Anomalies", marker=dict(color="red", size=10))
     else:
-        st.info("Please upload a valid .mf4 file to continue.")
+        fig = px.line(plot_df, x="timestamp", y=signal_choice, title="Signal Plot")
+
+    st.plotly_chart(fig, use_container_width=True)
